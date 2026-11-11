@@ -6,6 +6,39 @@ listings unchanged: the first client is `UNS-MAN` (Steve McGarry's 1981 Pac-Man 
 two optional patches for lines that touch hardware. That game lives in its own repository,
 [WANG-PACMAN](https://github.com/fpracek/WANG-PACMAN); its original listing is not distributed anywhere here.
 
+## Quick start
+
+### Run the Workstation (no installation)
+
+1. Download **`workstation.html`** from the [latest release](https://github.com/fpracek/WANG-BASIC2/releases/latest)
+   (it is also in this repository as `dist/workstation.html`).
+2. Open it in a modern browser (double-click). It is a single self-contained file; nothing is sent anywhere.
+3. You get a Wang-style green screen with a BASIC-2 prompt. Try:
+
+```
+10 FOR I=1 TO 5:PRINT "LINE";I:NEXT I
+RUN
+LOAD "PRIMES"
+RUN
+LIST
+```
+
+Things to try next: `CATALOG` (disk 310 holds samples: `HELLO`, `PRIMES`, `BOXES`, `GUESS`), `SAVE "MINE"`,
+`HELP`, `DIALECT` (choose the BASIC version), Esc (HALT a running program), the **Editor** tab (edit a program as text),
+the **Disks** tab (**Mount disk image** loads a `.bs2` or `.wvd` disk read-only) and the **Printers** tab
+(`SELECT PRINT 215` then `RUN` prints to a virtual printer; **Download PDF** saves the output).
+
+### Use it from JavaScript / Node
+
+```js
+const { Workstation } = require('./src/shell.js'), { Platter, DiskSystem } = require('./src/platter.js');
+const { Terminal } = require('./src/wangcrt.js');
+// terminal, keyboard {next(), poll()} and a DiskSystem are passed in: see "Architecture" below
+```
+
+Run the tests with `node test/shell.js` (and the others listed under *Tests*). Rebuild the single-file page with
+`python tools/build-workstation.py`.
+
 ## Architecture
 
 ```
