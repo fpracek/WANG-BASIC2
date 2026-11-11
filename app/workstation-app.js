@@ -79,6 +79,46 @@ function setSpeed(){ const f=SPEED[$('spd').value]; ws.interp.speed=f; }
 $('spd').onchange=()=>{ setSpeed(); $('spd').blur(); };
 setSpeed();
 
+/* ---- dialect ---- */
+for(const d of listDialects()){ const o=document.createElement('option'); o.value=d.id; o.textContent=d.name+(d.status==='reference'?'':'  ['+d.status+']'); o.title=d.summary; $('dialect').appendChild(o); }
+$('dialect').value=ws.interp.dialect.id;
+$('dialect').onchange=()=>{ typeIntoShell('DIALECT '+$('dialect').value); $('dialect').blur(); };
+
+/* ---- printers ---- */
+const printers=new Map();
+function downloadBytes(name,bytes,type){
+  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([bytes],{type})); a.download=name; a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+}
+function addPrinter(addr,opts){
+  const pr=new Printer(Object.assign({cols:132, rows:66, title:'PRINTER '+addr}, opts||{}));
+  printers.set(addr,pr); ws.interp.attach(addr,pr); renderPrinters(); return pr;
+}
+function renderPrinters(){
+  const box=$('printers'); box.innerHTML='';
+  for(const [addr,pr] of printers){
+    const d=document.createElement('div'); d.className='card';
+    d.innerHTML='<div class="row"><b>Printer '+addr+'</b><span class="grow"></span><span class="stat"></span></div>'
+      +'<div class="row"><label>columns <select class="cols"><option>80</option><option>132</option></select></label>'
+      +'<label>paper <select class="paper"><option value="letter">Letter</option><option value="a4">A4</option></select></label>'
+      +'<label><input type="checkbox" class="bar"> greenbar</label></div>'
+      +'<div class="row grow"><button class="pdf">Download PDF</button><button class="view">Preview</button><button class="clr warn">Clear</button></div>'
+      +'<pre class="prev" hidden></pre>';
+    const q=sel=>d.querySelector(sel);
+    q('.cols').value=String(pr.cols); q('.cols').onchange=()=>{ pr.cols=+q('.cols').value; };
+    q('.paper').value=pr.paper||'letter'; q('.paper').onchange=()=>{ pr.paper=q('.paper').value; };
+    q('.bar').checked=!!pr.greenbar; q('.bar').onchange=()=>{ pr.greenbar=q('.bar').checked; };
+    q('.pdf').onclick=()=>downloadBytes('printer-'+addr+'.pdf', pr.toPDF(), 'application/pdf');
+    q('.view').onclick=()=>{ const pre=q('.prev'); pre.hidden=!pre.hidden; if(!pre.hidden) pre.textContent=pr.getText().replace(/\f/g,'\n------------- page break -------------\n').slice(0,30000)||'(nothing printed yet)'; };
+    q('.clr').onclick=()=>{ pr.clear(); q('.prev').textContent=''; };
+    pr._stat=q('.stat'); pr._prev=q('.prev');
+    box.appendChild(d);
+  }
+}
+setInterval(()=>{ for(const pr of printers.values()) if(pr._stat) pr._stat.textContent=pr.pageCount()+' page(s), '+pr.lineCount()+' line(s)'; },600);
+$('addPrinter').onclick=()=>{ let n=215; while(printers.has(String(n))) n++; addPrinter(String(n)); };
+addPrinter('215');
+
 window.addEventListener('keydown',e=>{
   const t=e.target; if(t && t!==$('kb') && /^(TEXTAREA|INPUT|SELECT)$/.test(t.tagName)) return;
   if(e.ctrlKey||e.metaKey||e.altKey) return;
@@ -108,7 +148,7 @@ function download(name,text,type='text/plain'){
 }
 function refreshDisks(){
   const dr=$('drive'); dr.innerHTML='';
-  for(const [addr,p] of disk.drives){ const o=document.createElement('option'); o.value=addr; o.textContent=addr+'  '+p.label+(addr===disk.current?'  *':''); dr.appendChild(o); }
+  for(const [addr,p] of disk.drives){ const o=document.createElement('option'); o.value=addr; o.textContent=addr+'  '+p.label+(p.readOnly?'  [read-only]':'')+(addr===disk.current?'  *':''); dr.appendChild(o); }
   if(!disk.drives.has(selDrive)) selDrive=disk.current; dr.value=selDrive;
   const box=$('files'); box.innerHTML='';
   const p=disk.drives.get(selDrive);
@@ -122,6 +162,8 @@ function refreshDisks(){
   }
   const f=selFile&&p?p.get(selFile):null;
   $('load').disabled=!(f&&f.kind==='program'); $('export').disabled=!(f&&f.kind==='program'); $('del').disabled=!f||p.readOnly;
+  $('eject').disabled=!(p&&p.image);
+  if($('dialect') && $('dialect').value!==ws.interp.dialect.id) $('dialect').value=ws.interp.dialect.id;
 }
 function doLoad(){
   const p=disk.drives.get(selDrive), f=selFile&&p?p.get(selFile):null; if(!f||f.kind!=='program') return;
@@ -142,7 +184,19 @@ async function readLatin1(file){ return new TextDecoder('latin1').decode(await f
 $('importFile').onchange=async e=>{
   const f=e.target.files[0]; if(!f) return; const text=await readLatin1(f);
   const name=f.name.replace(/[.][^.]*$/,'').toUpperCase();
-  const p=disk.drives.get(selDrive); p.putProgram(name,text); disk.persist(); selFile=name; e.target.value=''; refreshDisks();
+  const p=disk.drives.get(selDrive); if(p.readOnly){ alert('Drive '+selDrive+' is read-only. Select a writable drive (310 or 320).'); e.target.value=''; return; }
+  p.putProgram(name,text); disk.persist(); selFile=name; e.target.value=''; refreshDisks();
+};
+$('imageFile').onchange=async e=>{
+  for(const f of e.target.files){
+    try{ const used=disk.mountImage(new Uint8Array(await f.arrayBuffer()), f.name); selDrive=used[0]; selFile=null; }
+    catch(err){ alert('Cannot read '+f.name+': '+err.message); }
+  }
+  e.target.value=''; refreshDisks();
+};
+$('eject').onclick=()=>{
+  const p=disk.drives.get(selDrive);
+  if(p&&p.image&&confirm('Eject '+p.label+' from drive '+selDrive+'?')){ disk.unmount(selDrive); if(!disk.drives.has(disk.current)) disk.select('310'); selDrive='310'; selFile=null; refreshDisks(); }
 };
 $('exportDisk').onclick=()=>download('disk-'+selDrive+'.json', disk.exportPlatter(selDrive), 'application/json');
 $('importDisk').onchange=async e=>{

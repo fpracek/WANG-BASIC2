@@ -7,6 +7,7 @@
    - Strings have fixed length (padded with spaces); STR(v,a,n) works both as a value and as a destination.
    - Time is "virtual": every statement and every byte sent to the terminal costs a few microseconds,
      and execution is slowed down accordingly (the game's pace depended only on the speed of the 2200). */
+const _DL = (typeof module !== 'undefined') ? require('./dialects.js') : { DEFAULT_DIALECT, getDialect };
 class BasicError extends Error {}
 class AllFill { constructor(b){ this.b=b; } }
 /* control outcomes: not errors, they make run() finish with a status */
@@ -14,13 +15,14 @@ class ProgramEnd { constructor(direct){ this.direct=!!direct; } }
 class ProgramStop { constructor(line){ this.line=line; } }
 class ProgramHalt { constructor(){} }
 
-const STMT_KW = ['PRINTUSING','PRINT','KEYIN','LINPUT','GOSUB','GOTO','RESTORE','RETURN','CONVERT','DBACKSPACE',
+const STMT_KW = ['PRINTUSING','PRINT','KEYIN','LINPUT','LET','GOSUB','GOTO','RESTORE','RETURN','CONVERT','DBACKSPACE',
   'LIMITS','SELECT','DEFFN','DIM','COM','MAT','READ','DATA','FOR','NEXT','IF','ON','STOP','LOAD','REM',
   '$GIO/005(A000)','$BREAK','$TRAN'];
 const NUMFN = ['INT','MOD','MIN','MAX','ABS','RND','SGN','LEN','SQR','EXP','LOG','SIN','COS','TAN','ATN'];
 
 class Parser {
-  constructor(src){ this.s=src; this.i=0; }
+  constructor(src, dialect){ this.s=src; this.i=0; this.d=dialect||_DL.DEFAULT_DIALECT; }
+  need(feature, what){ if(!this.d.features[feature]) this.err(what+' is not available in '+this.d.name); }
   ws(){ while(this.s.charCodeAt(this.i)===32) this.i++; }
   eof(){ this.ws(); return this.i>=this.s.length; }
   peek(w){ this.ws(); return this.s.startsWith(w,this.i); }
@@ -43,6 +45,7 @@ class Parser {
   parseStatement(){
     this.ws(); const s=this.s;
     if(s[this.i]==='%'){ this.i=s.length; return null; }
+    if(this.d.features.remDollarPc && s.startsWith('REM $PC',this.i)){ this.i+=7; this.ws(); return this.i<s.length ? this.parseStatement() : null; }
     for(const kw of STMT_KW) if(s.startsWith(kw,this.i)) return this.stmt(kw);
     return this.assign();
   }
@@ -55,8 +58,8 @@ class Parser {
         return {t:'using', f, e, nl}; }
       case 'IF': { const c=this.expr(); this.expect('THEN'); const th=this.thenPart(); let el=null;
         const save=this.i; this.ws();
-        if(s[this.i]===':'){ let j=this.i+1; while(s[j]===' ') j++; if(s.startsWith('ELSE',j)){ this.i=j+4; el=this.thenPart(); } else this.i=save; }
-        else if(s.startsWith('ELSE',this.i)){ this.i+=4; el=this.thenPart(); }
+        if(s[this.i]===':'){ let j=this.i+1; while(s[j]===' ') j++; if(s.startsWith('ELSE',j)){ this.need('else','ELSE'); this.i=j+4; el=this.thenPart(); } else this.i=save; }
+        else if(s.startsWith('ELSE',this.i)){ this.need('else','ELSE'); this.i+=4; el=this.thenPart(); }
         return {t:'if', c, th, el}; }
       case 'FOR': { const v=this.varName(); this.expect('='); const a=this.expr(); this.expect('TO'); const b=this.expr();
         let st=null; if(this.eat('STEP')) st=this.expr(); return {t:'for', v, a, b, st}; }
@@ -76,7 +79,8 @@ class Parser {
         return {t:'convert', e, lv, pic}; }
       case 'KEYIN': { const lv=this.lvalue(); let l1=null,l2=null; if(this.eat(',')){ l1=this.lineNo(); if(this.eat(',')) l2=this.lineNo(); }
         return {t:'keyin', lv, l1, l2}; }
-      case 'LINPUT': { this.ws(); while(s[this.i]==='-'||s[this.i]==='?') this.i++; return {t:'linput', lv:this.lvalue()}; }
+      case 'LET': return this.assign();
+      case 'LINPUT': { this.need('linput','LINPUT'); this.ws(); while(s[this.i]==='-'||s[this.i]==='?') this.i++; return {t:'linput', lv:this.lvalue()}; }
       case 'DIM': case 'COM': return {t:'dim', com:kw==='COM', decl:this.decls()};
       case 'ON': { const e=this.expr(); const kind=this.eat('GOTO')?'goto':(this.expect('GOSUB'),'gosub'); const list=[];
         for(;;){ this.ws(); if(/\d/.test(s[this.i]||'')) list.push(this.lineNo()); else list.push(null);
@@ -84,7 +88,10 @@ class Parser {
         return {t:'on', e, kind, list}; }
       case 'STOP': { this.ws(); if(s[this.i]==='"') this.i=s.indexOf('"',this.i+1)+1; return {t:'stop'}; }
       case 'LOAD': { this.ws(); if(s[this.i]==='T') this.i++; this.ws(); const j=s.indexOf('"',this.i+1); const name=s.slice(this.i+1,j); this.i=j+1; return {t:'load', name}; }
-      case 'SELECT': { this.ws(); const m=/^P(\d?)/.exec(s.slice(this.i)); let dev='P'; if(m) dev='P'+m[1];
+      case 'SELECT': { this.ws(); const rest=s.slice(this.i);
+        const m2=/^(PRINT|LIST|CO|INPUT|CI)\s*\/?(\d{3})/.exec(rest) || /^(P)\s+\/?(\d{3})/.exec(rest);
+        if(m2){ this.i+=m2[0].length; while(this.i<s.length && s[this.i]!==':') this.i++; return {t:'select', kind:(m2[1]==='P'?'PRINT':m2[1]), addr:m2[2]}; }
+        const m=/^P(\d?)/.exec(rest); let dev='P'; if(m) dev='P'+m[1];
         while(this.i<s.length && s[this.i]!==':') this.i++; return {t:'select', dev}; }
       case 'DEFFN': { this.ws(); if(s[this.i]==="'"){ this.i++; const n=this.lineNo(); const params=[];
           if(s[this.i]==='('){ this.i++; do{ params.push(this.varName()); } while(this.eat(',')); this.expect(')'); }
@@ -106,9 +113,9 @@ class Parser {
     for(;;){
       this.ws(); if(this.i>=s.length || s[this.i]===':' || s.startsWith('ELSE',this.i)) break;
       nl=true;
-      if(this.eat('AT(')){ const a=[this.expr()]; while(this.eat(',')) a.push(this.expr()); this.expect(')'); items.push({k:'at', a}); }
+      if(this.eat('AT(')){ this.need('printAt','AT('); const a=[this.expr()]; while(this.eat(',')) a.push(this.expr()); this.expect(')'); items.push({k:'at', a}); }
       else if(this.eat('TAB(')){ const a=this.expr(); this.expect(')'); items.push({k:'tab', a}); }
-      else if(this.eat('BOX(')){ const a=this.expr(); this.expect(','); const b=this.expr(); this.expect(')'); items.push({k:'box', a, b}); }
+      else if(this.eat('BOX(')){ this.need('printBox','BOX('); const a=this.expr(); this.expect(','); const b=this.expr(); this.expect(')'); items.push({k:'box', a, b}); }
       else items.push({k:'e', e:this.expr()});
       this.ws();
       if(s[this.i]===';'||s[this.i]===','){ this.i++; nl=false; } else break;
@@ -224,7 +231,7 @@ class Parser {
       this.i+=op.length; const y=this.add(); this.expect(')'); return {t:'pos', rev, x, op, y}; }
     if(s.startsWith('ADDC',i)){ this.i+=4; return {t:'addc', e:this.primary()}; }
     if(s.startsWith('$PSTAT(',i)){ const j=s.indexOf(')',i); this.i=j+1; return {t:'lit', v:' '.repeat(16)}; }
-    for(const f of NUMFN) if(s.startsWith(f+'(',i)){ this.i+=f.length+1; const a=[this.expr()]; while(this.eat(',')) a.push(this.expr()); this.expect(')'); return {t:'fn', f, a}; }
+    for(const f of NUMFN) if(s.startsWith(f+'(',i)){ if(this.d.disabledFunctions.includes(f)) this.err(f+'( is not available in '+this.d.name); this.i+=f.length+1; const a=[this.expr()]; while(this.eat(',')) a.push(this.expr()); this.expect(')'); return {t:'fn', f, a}; }
     return this.varRef();
   }
 }
@@ -234,10 +241,13 @@ class Interp {
   /* term: CRT device (see wangcrt.js); io: keyboard {poll(),next()}; disk: DiskSystem (platter.js) */
   constructor(term, io, disk){
     this.T=term; this.io=io; this.disk=disk;
+    this.devices=new Map([['005',term]]);          // address -> device (CRT = 005); printers are attached by the host
+    this.printDev=term; this.listDev=term; this.devByteCost=100;
     this.nums=new Map(); this.strs=new Map(); this.slen=new Map(); this.arrs=new Map(); this.com=new Set();
     this.curFile=null;
     this.runId=0; this.stmtCost=100; this.byteCost=500; this.breakCost=20000; this.speed=1; this.slow=false;
     this.cache=new Map();
+    this.dialect=_DL.getDialect('basic2');
     this.reportErrors=true;     // true: a runtime error is written at the bottom of the screen and rethrown ('game' use)
     this.returnErrors=false;    // true: run() returns {status:'error',...} ('shell' use)
     this.haltReq=false; this.dIdx=-1; this.dFresh=false; this.canContinue=false;
@@ -250,7 +260,7 @@ class Interp {
     for(const e of entries){
       const no=e.no; const src = patches[no]!==undefined ? patches[no] : e.src;
       let stmts;
-      try{ stmts=new Parser(src).parseLine(); }catch(err){ const x=new BasicError(name+' line '+no+': '+err.message); x.line=no; throw x; }
+      try{ stmts=new Parser(src,this.dialect).parseLine(); }catch(err){ const x=new BasicError(name+' line '+no+': '+err.message); x.line=no; throw x; }
       const idx=lines.length; lines.push({no, stmts}); lineMap.set(no,idx);
       stmts.forEach((st,si)=>{
         if(st.t==='data'){ if(!dataStart.has(no)) dataStart.set(no,data.length); for(const d of st.items) data.push(d); }
@@ -289,11 +299,16 @@ class Interp {
   }
   start(name){
     this.runId++; this.nums.clear(); this.strs.clear(); this.slen.clear(); this.arrs.clear(); this.com.clear();
-    this.T.clear(); this.T.hex('0F'); this.slow=false; this.disk.restore();
+    this.T.clear(); this.T.hex('0F'); this.slow=false; this.printDev=this.T; this.listDev=this.T; this.disk.restore();
     this.load(name); return this.run();
   }
   reset(){ this.runId++; }
   /* ---------- execution ---------- */
+  /* devices: any object with out(byte), cx, cols, at(), atClear(), drawBox() (a Printer, see printer.js) */
+  attach(addr, dev){ this.devices.set(String(addr), dev); }
+  detach(addr){ const d=this.devices.get(String(addr)); this.devices.delete(String(addr)); if(this.printDev===d) this.printDev=this.T; if(this.listDev===d) this.listDev=this.T; }
+  device(addr){ const d=this.devices.get(String(addr)); if(!d) throw new BasicError('no device at address '+addr); return d; }
+  setDialect(id){ this.dialect=_DL.getDialect(id); this.cache.clear(); }
   curLineNo(){ const L=this.prog.lines[this.li]; return L ? L.no : null; }
   halt(){ this.haltReq=true; if(this.io.abort) this.io.abort(); }
   /* run() returns {status:'end'|'stop'|'halt'|'error'|'reset', line, msg}; with reportErrors (game mode) it rethrows errors */
@@ -333,7 +348,7 @@ class Interp {
   async continueRun(){ this.runId++; const r=await this.run(); this.canContinue=(r.status==='stop'||r.status==='halt'); return r; }
   /* direct statement (no line number): runs as a line appended at the end; variables shared with the program */
   async execDirect(src){
-    const stmts=new Parser(src).parseLine();
+    const stmts=new Parser(src,this.dialect).parseLine();
     const saved={prog:this.prog, li:this.li, si:this.si, g:this.gstack, f:this.fstack, dpos:this.dpos};
     const lines=this.prog.lines.concat([{no:-1,stmts}]); const lineMap=new Map(this.prog.lineMap); lineMap.set(-1,lines.length-1);
     this.prog={...this.prog, lines, lineMap}; this.dIdx=lines.length-1; this.dFresh=true;
@@ -388,7 +403,9 @@ class Interp {
         let t=String(Math.round(v)); if(t.length>w) t='*'.repeat(w); this.emit(t.padStart(w,' ')); if(st.nl) this.emit('\r\n'); return; }
       case 'gio': this.emit(this.str(this.ev(st.e))); return;
       case 'break': this.vt+=this.breakCost*this.speed; return;
-      case 'select': this.slow=(st.dev==='P1'); return;
+      case 'select':
+        if(st.kind){ if(st.kind==='PRINT') this.printDev=this.device(st.addr); else if(st.kind==='LIST') this.listDev=this.device(st.addr); return; }
+        this.slow=(st.dev==='P1'); return;
       case 'keyin': {
         // KEYIN K$ without line numbers WAITS for a key; with line numbers it does not block (K$ is unchanged if there is no key)
         if(st.l1==null && st.l2==null) return (async()=>{ const k=await this.io.next(); if(k.abort) throw new ProgramHalt(); this.setLv(st.lv, String.fromCharCode(k.c)); })();
@@ -419,12 +436,12 @@ class Interp {
   }
   /* ---------- I/O ---------- */
   emit(s){
-    const T=this.T;
+    const T=this.printDev;
     for(let i=0;i<s.length;i++) T.out(s.charCodeAt(i));
-    this.vt+=s.length*(this.slow?25000:this.byteCost)*this.speed;
+    this.vt+=s.length*(T===this.T ? (this.slow?25000:this.byteCost) : this.devByteCost)*this.speed;
   }
   doPrint(st){
-    const T=this.T;
+    const T=this.printDev;
     for(const it of st.items){
       switch(it.k){
         case 'at': { const r=this.ev(it.a[0]), c=this.ev(it.a[1]);

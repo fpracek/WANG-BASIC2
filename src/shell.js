@@ -6,6 +6,7 @@
    Dependencies: Interp (basic2.js), a DiskSystem (platter.js), a CRT (wangcrt.js), a keyboard {next()} with cursor
    up/down codes = 0x46/0x45 (sp:true) for the history. */
 const _B = (typeof module!=='undefined') ? require('./basic2.js') : {Interp, Parser};
+const _DS = (typeof module!=='undefined') ? require('./dialects.js') : {listDialects, getDialect};
 class Workstation {
   constructor(term, io, disk, opts={}){
     this.T=term; this.io=io; this.disk=disk;
@@ -18,6 +19,8 @@ class Workstation {
   /* ---------- screen ---------- */
   out(s){ this.T.print(s); }
   nl(){ if(this.T.cx>0) this.out('\r\n'); }
+  /* write to any output device (the CRT or an attached printer) */
+  outDev(dev,s){ if(dev===this.T){ this.out(s); return; } for(let i=0;i<s.length;i++) dev.out(s.charCodeAt(i)); }
   say(s){ this.nl(); this.out(s+'\r\n'); }
   err(s){ this.say('ERROR: '+s); }
   resetModes(){ this.T.hex('0202000F020400000F05'); }     // normal set, attributes off, cursor on
@@ -75,6 +78,7 @@ class Workstation {
       case 'CATALOG': case 'CAT': case 'DIR': return this.cmdCatalog(up);
       case 'DELETE':  return this.cmdDelete(up);
       case 'HELP':    return this.cmdHelp();
+      case 'DIALECT': return this.cmdDialect(up);
       case 'RENUMBER': return this.err('RENUMBER not implemented yet');
       case 'SELECT':  if(/^SELECT\s+DISK/.test(up)) return this.cmdSelect(up); // otherwise it is a SELECT statement
     }
@@ -82,12 +86,12 @@ class Workstation {
   }
   editLine(no,rest){
     if(!rest){ if(this.lines.delete(no)) this.changed(); return; }
-    try{ new _B.Parser(rest).parseLine(); }catch(e){ this.err('SYNTAX '+e.message.split(' @')[0]); return; }
+    try{ new _B.Parser(rest,this.interp.dialect).parseLine(); }catch(e){ this.err('SYNTAX '+e.message.split(' @')[0]); return; }
     this.lines.set(no,rest); this.changed();
   }
   cmdList(up){
     const m=/^LIST\s*(\d+)?\s*[,-]?\s*(\d+)?/.exec(up); const a=m&&m[1]!==undefined?+m[1]:-Infinity, b=m&&m[2]!==undefined?+m[2]:(m&&m[1]!==undefined&&!/[,-]/.test(up)?+m[1]:Infinity);
-    let n=0; for(const e of this.entries()) if(e.no>=a && e.no<=b){ this.out(String(e.no).padStart(4,'0')+' '+e.src+'\r\n'); n++; }
+    let n=0; for(const e of this.entries()) if(e.no>=a && e.no<=b){ this.outDev(this.interp.listDev, String(e.no).padStart(4,'0')+' '+e.src+'\r\n'); n++; }
     if(!n) this.say('NO PROGRAM');
   }
   buildForRun(){
@@ -135,7 +139,7 @@ class Workstation {
       const t=raw.trim(); if(!t) return;
       const m=/^(\d+)\s*(.*)$/.exec(this.upper(t)); if(!m){ errs.push('line '+(i+1)+': missing line number'); return; }
       if(!m[2]) return;
-      try{ new _B.Parser(m[2]).parseLine(); }catch(e){ errs.push('line '+(i+1)+' ('+m[1]+'): '+String(e.message).split(' @')[0]); return; }
+      try{ new _B.Parser(m[2],this.interp.dialect).parseLine(); }catch(e){ errs.push('line '+(i+1)+' ('+m[1]+'): '+String(e.message).split(' @')[0]); return; }
       map.set(+m[1],m[2]);
     });
     if(!errs.length){ this.lines=map; this.changed(); }
@@ -170,18 +174,29 @@ class Workstation {
     this.say('DISK '+addr+'  '+p.label+(addr===this.disk.current?'  (CURRENT)':''));
     const l=p.list().sort((a,b)=>a.name<b.name?-1:1);
     if(!l.length) this.out('  (EMPTY)\r\n');
-    for(const f of l) this.out('  '+f.name.padEnd(12)+(f.kind==='program'?'PROG  ':'DATA  ')+String(f.size).padStart(6)+(f.kind==='program'?' CHARS':' RECS')+'\r\n');
+    for(const f of l) this.out('  '+f.name.padEnd(12)+(f.kind==='program'?'PROG  ':'DATA  ')+String(f.size).padStart(6)+' '+String(f.unit||'records').toUpperCase()+'\r\n');
   }
   cmdDelete(up){
     const m=/^DELETE\s*(\d+)\s*[,-]?\s*(\d+)?/.exec(up); if(!m){ this.err('DELETE a[,b]'); return; }
     const a=+m[1], b=m[2]!==undefined?+m[2]:a; let n=0; for(const no of [...this.lines.keys()]) if(no>=a&&no<=b){ this.lines.delete(no); n++; }
     this.changed(); this.say(n+' LINE(S) DELETED');
   }
+  /* workstation extension (not a Wang command): show or change the BASIC dialect */
+  cmdDialect(up){
+    const m=/^DIALECT\s+([A-Za-z0-9-]+)/.exec(up);
+    if(m){
+      let d; try{ d=_DS.getDialect(m[1].toLowerCase()); }catch(e){ this.err(e.message); return; }
+      this.interp.setDialect(d.id); this.dirty=true; this.onChange(); this.say('DIALECT: '+d.name+'  ['+d.status+']'); return;
+    }
+    this.say('CURRENT DIALECT: '+this.interp.dialect.name);
+    for(const d of _DS.listDialects()) this.out((d.id===this.interp.dialect.id?'* ':'  ')+d.id.padEnd(11)+d.name+'  ['+d.status+']\r\n');
+    this.out('DIALECT id   (e.g. DIALECT niakwa-2c)\r\n');
+  }
   cmdHelp(){
     this.say('PROGRAM:  10 PRINT "HI"   (number+text = enter line, number alone = delete)');
     this.out('LIST [a[,b]]   RUN [n]   CONTINUE   DELETE a[,b]   NEW   CLEAR [P]\r\n');
     this.out('LOAD [RUN] "name"   SAVE "name"   SCRATCH "name"\r\n');
-    this.out('CATALOG [disk]   SELECT DISK 310\r\n');
+    this.out('CATALOG [disk]   SELECT DISK 310   DIALECT [id]\r\n');
     this.out('Anything else runs immediately: PRINT 2+3*4   A=5   PRINT A\r\n');
     this.out('Up/Down arrows = command history.   Esc = HALT a running program.\r\n');
   }

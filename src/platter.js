@@ -17,7 +17,7 @@ class Platter {
   has(name){ return this.files.has(name); }
   get(name){ return this.files.get(name)||null; }
   remove(name){ const r=this.files.delete(name); if(r) this.version++; return r; }
-  list(){ return [...this.files.values()].map(f=>({name:f.name,kind:f.kind,size:f.kind==='program'?f.text.length:f.records.length})); }
+  list(){ return [...this.files.values()].map(f=>({name:f.name,kind:f.kind,size:f.kind==='program'?f.text.length:(f.raw?f.raw.length>>8:f.records.length), unit:f.kind==='program'?'chars':(f.raw?'sectors':'records')})); }
   /* serialization: read-only platters are not saved (their files come from the code) */
   toJSON(){ const o={label:this.label,files:[]}; for(const f of this.files.values()) o.files.push(f); return o; }
   static fromJSON(j){ const p=new Platter(j.label); for(const f of j.files) p.files.set(f.name,f); return p; }
@@ -38,12 +38,26 @@ class DiskSystem {
   }
   mount(addr,platter){ this.drives.set(addr,platter); return platter; }
   unmount(addr){ this.drives.delete(addr); }
+  /* first free drive address at or after 320 (310 is the system drive) */
+  freeAddress(from=320){ let n=from; while(this.drives.has(String(n))) n+=10; return String(n); }
+  /* mount a disk image (.bs2 raw sectors or .wvd) read-only; returns the addresses used. Needs image.js. */
+  mountImage(bytes,fileName){
+    const build=(typeof module!=='undefined') ? require('./image.js').platterSetFromImage : platterSetFromImage;   // lazy: image.js needs Platter
+    const set=build(bytes,fileName), used=[];
+    for(const pl of set){ const a=this.freeAddress(); this.mount(a,pl); used.push(a); }
+    return used;
+  }
   select(addr){ if(!this.drives.has(addr)) throw new Error('drive '+addr+' not mounted'); this.current=addr; }
   /* looks in the current drive first, then in the others */
   find(name){
     const cur=this.drives.get(this.current);
     if(cur&&cur.has(name)) return {addr:this.current,platter:cur,file:cur.get(name)};
     for(const [addr,p] of this.drives) if(p.has(name)) return {addr,platter:p,file:p.get(name)};
+    const lc=name.toLowerCase();                                    // second chance: ignore case
+    for(const addr of [this.current, ...this.drives.keys()]){
+      const p=this.drives.get(addr); if(!p) continue;
+      for(const k of p.files.keys()) if(k.toLowerCase()===lc) return {addr,platter:p,file:p.get(k)};
+    }
     return null;
   }
   status(name){ const f=this.find(name); return !f ? 0 : (f.file.kind==='program' ? 1 : 2); }
