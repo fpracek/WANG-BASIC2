@@ -145,6 +145,9 @@ emulated CRT with the BASIC-2 prompt and four panels/controls:
   WangEmu formats: `wvdutil list` (one line per BASIC line) and the pretty-printed `listd` (lines wrapped at 78 columns,
   each statement after a colon on its own line); the continuation lines are joined back automatically, including the
   space that `listd` loses when a wrap falls exactly on one. Prefer `list` when you can: it is exact.
+  Both file buttons recognise what the file really is: a disk image chosen in **Import listing** is mounted instead of being
+  loaded as one line of garbage, and a listing chosen in **Mount disk image** is imported. A file with no BASIC lines gets an
+  explanation. When a name exists on several drives, the current drive wins: `SELECT DISK 330` first.
 - **Printers**: one card per printer (columns, paper, greenbar), text preview and **Download PDF**; add more printers.
 - **Editor**: edit the program as text, send it to the workstation, run it.
 
